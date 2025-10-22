@@ -1,0 +1,11 @@
+[package]
+name = "my_burn"
+version = "0.1.0"
+edition = "2021"
+
+
+[dependencies]
+burn = { version = "0.18.0", features = ["train","wgpu", "autodiff","ndarray"] }
+burn-autodiff = "0.18.0"
+image = "0.25.8"
+rand = "0.9.2"
