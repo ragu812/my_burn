@@ -789,9 +789,9 @@ fn main() {
 
     let in_channels = 3;
     let latent_dim = 256;
-    let num_timesteps = 1000;
+    let num_timesteps = 2000;
     let batch_size = 1;
-    let num_epochs = 5;
+    let num_epochs = 25;
 
     let mut model = DiffusionModel::<Backend>::new(&device, latent_dim, in_channels, num_timesteps);
     let optimizer_config = AdamConfig::new();
