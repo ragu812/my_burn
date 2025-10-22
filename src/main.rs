@@ -799,7 +799,7 @@ fn main() {
 
     println!("Model created successfully!");
 
-    let dataset = Image::directory(r"C:\Users\M.KUMAR\Desktop\Pictures 1", 4, 4).unwrap();
+    let dataset = Image::directory(r"C:\Users\M.KUMAR\Desktop\Pictures", 4, 4).unwrap();
 
     println!("Starting training...");
     for epoch in 0..num_epochs {
