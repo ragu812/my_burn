@@ -845,10 +845,12 @@ fn main() {
 
     save_model(&model, "trained_model.bin").unwrap();
 
+    // Replace the image generation section in your main() function with this:
+
     println!("Generating image");
     // Generate and save an image
     let generated = model.sample(latent_dim, 1, &device);
-    let generated_img = generated.squeeze(0); // [C, H, W]
+    let generated_img: Tensor<Backend, 3> = generated.squeeze::<3>(0); // Explicitly specify 3D tensor
 
     // Convert from [C, H, W] to pixel data
     let data: Vec<f32> = generated_img.to_data().to_vec().unwrap();
