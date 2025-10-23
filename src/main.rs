@@ -842,7 +842,7 @@ fn main() {
     println!("Generating image");
     // Generate and save an image
     let generated = model.sample(latent_dim, 1, &device);
-    let generated_img: burn::tensor::Tensor<burn::backend::Autodiff<burn::backend::NdArray<f32>>, 3> = generated.squeeze(0); // Remove batch dim
+    let generated_img: burn::tensor::Tensor<burn::backend::Autodiff<burn::backend::Wgpu<f32>>, 3> = generated.squeeze(0); // Remove batch dim
     let data: Vec<f32> = generated_img.to_data().to_vec().unwrap();
     let img = image::RgbImage::from_fn(32, 32, |x, y| {
         let idx = (y * 32 + x) as usize;
