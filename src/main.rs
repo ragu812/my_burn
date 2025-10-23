@@ -1,3 +1,4 @@
+use burn::backend::Wgpu;
 use burn::tensor::Int;
 use burn::tensor::Tensor;
 use burn::tensor::activation;
@@ -786,9 +787,9 @@ pub fn train_ldm_epoch<B: Backend>(
 }
 
 fn main() {
-    use burn::backend::{Autodiff, NdArray};
+    use burn::backend::{Autodiff, Wgpu};
 
-    type Backend = Autodiff<NdArray<f32>>;
+    type Backend = Autodiff<Wgpu<f32>>;
     let device = Default::default();
 
     let in_channels = 3;
