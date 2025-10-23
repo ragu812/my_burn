@@ -51,8 +51,8 @@ impl<B: Backend> SimpleEncoder<B> {
         .init(device),
             bn_4: BatchNormConfig::new(512).init(device),
 
-            mean: LinearConfig::new(512 * 4 * 4, latent_dimen * 16).init(device),
-            variance: LinearConfig::new(512 * 4 * 4, latent_dimen * 16).init(device),
+            mean: LinearConfig::new(512 * 8 * 8, latent_dimen * 16).init(device),
+            variance: LinearConfig::new(512 * 8 * 8, latent_dimen * 16).init(device),
             latent_dimen,
         }
     }
@@ -96,7 +96,7 @@ pub struct SimpleDecoder<B: Backend> {
 impl<B: Backend> SimpleDecoder<B> {
     pub fn new(output: usize, latent_dimen: usize, device: &B::Device) -> Self {
         Self {
-            transfer: LinearConfig::new(latent_dimen * 16, 512 * 4 * 4).init(device),
+            transfer: LinearConfig::new(latent_dimen * 16, 512 * 8 * 8).init(device),
 
             reverse1: ConvTranspose2dConfig::new([512, 256], [3, 3])
                 .with_stride([2, 2])
@@ -111,13 +111,13 @@ impl<B: Backend> SimpleDecoder<B> {
             bn_2: BatchNormConfig::new(128).init(device),
 
             reverse3: ConvTranspose2dConfig::new([128, 64], [3, 3])
-                .with_stride([2, 2])
+                .with_stride([1, 1])
                 .with_padding([1, 1])
                 .init(device),
             bn_3: BatchNormConfig::new(64).init(device),
 
             reverse4: ConvTranspose2dConfig::new([64, output], [3, 3])
-                .with_stride([2, 2])
+                .with_stride([1, 1])
                 .with_padding([1, 1])
                 .init(device),
 
@@ -131,7 +131,7 @@ impl<B: Backend> SimpleDecoder<B> {
         let y = self.transfer.forward(input2_flat);
         let y = activation::relu(y);
         let batch_size = y.dims()[0];
-        let y = y.reshape([batch_size, 512, 4, 4]);
+        let y = y.reshape([batch_size, 512, 8, 8]);
 
         let y = self.reverse1.forward(y);
         let y = self.bn_1.forward(y);
@@ -336,27 +336,27 @@ impl<B: Backend> Unet<B> {
         Self {
             time_emb: TimeAddition::new(time_emb_dim, device),
             down1: Conv2dConfig::new([in_channels, 64], [3, 3])
-                .with_stride([2, 2])
+                .with_stride([1, 1])
                 .with_padding(PaddingConfig2d::Explicit(1, 1))
                 .init(device),
             down_res1: ResidualBlock::new(device, 64, time_emb_dim),
             down2: Conv2dConfig::new([64, 128], [3, 3])
-                .with_stride([2, 2])
+                .with_stride([1, 1])
                 .with_padding(PaddingConfig2d::Explicit(1, 1))
                 .init(device),
             down_res2: ResidualBlock::new(device, 128, time_emb_dim),
             down3: Conv2dConfig::new([128, 256], [3, 3])
-                .with_stride([2, 2])
+                .with_stride([1, 1])
                 .with_padding(PaddingConfig2d::Explicit(1, 1))
                 .init(device),
             down_res3: ResidualBlock::new(device, 256, time_emb_dim),
             down4: Conv2dConfig::new([256, 512], [3, 3])
-                .with_stride([2, 2])
+                .with_stride([1, 1])
                 .with_padding(PaddingConfig2d::Explicit(1, 1))
                 .init(device),
             down_res4: ResidualBlock::new(device, 512, time_emb_dim),
             down5: Conv2dConfig::new([512, 1024], [3, 3])
-                .with_stride([2, 2])
+                .with_stride([1, 1])
                 .with_padding(PaddingConfig2d::Explicit(1, 1))
                 .init(device),
             down_res5: ResidualBlock::new(device, 1024, time_emb_dim),
@@ -366,22 +366,22 @@ impl<B: Backend> Unet<B> {
             mid_res3: ResidualBlock::new(device, 1024, time_emb_dim),
 
             up1: ConvTranspose2dConfig::new([1024, 512], [3, 3])
-                .with_stride([2, 2])
+                .with_stride([1, 1])
                 .with_padding([1, 1])
                 .init(device),
             up_res1: ResidualBlock::new(device, 512, time_emb_dim),
             up2: ConvTranspose2dConfig::new([512, 256], [3, 3])
-                .with_stride([2, 2])
+                .with_stride([1, 1])
                 .with_padding([1, 1])
                 .init(device),
             up_res2: ResidualBlock::new(device, 256, time_emb_dim),
             up3: ConvTranspose2dConfig::new([256, 128], [3, 3])
-                .with_stride([2, 2])
+                .with_stride([1, 1])
                 .with_padding([1, 1])
                 .init(device),          
             up_res3: ResidualBlock::new(device, 128, time_emb_dim),
             up4: ConvTranspose2dConfig::new([128, 64], [3, 3])
-                .with_stride([2, 2])
+                .with_stride([1, 1])
                 .with_padding([1, 1])
                 .init(device),
             up_res4: ResidualBlock::new(device, 64, time_emb_dim),
@@ -808,8 +808,12 @@ fn main() {
         let mut total_loss = 0.0f32;
         let num_batches = dataset.size / batch_size;
 
-        for batch_idx in 0..num_batches {
+        println!("Epoch: {}", epoch);
+
+        for batch_idx in 0..num_batches{
             let mut batch_images = Vec::new();
+
+            println!("Batch: {}", batch_idx);
 
             for i in 0..batch_size {
                 let idx = batch_idx * batch_size + i;
