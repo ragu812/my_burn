@@ -2,6 +2,7 @@ use burn::tensor::Int;
 use burn::tensor::Tensor;
 use burn::tensor::activation;
 use burn::tensor::backend::Backend;
+use burn::backend::{Autodiff, WgpuBackend};
 use burn::module::Module;
 use burn::nn::conv::{Conv2d, Conv2dConfig, ConvTranspose2d, ConvTranspose2dConfig};
 use burn::nn::{BatchNorm, BatchNormConfig, Linear, LinearConfig, PaddingConfig2d};
@@ -567,7 +568,6 @@ impl<B: Backend> DiffusionModel<B> {
             let i_emb = sin_time_addition(device, i_tensor, 256);
 
             let noise_pred = self.noise_predict(z.clone(), i_emb);
-            let noise_pred_2d: Tensor<B, 2> = noise_pred.flatten(1, 3);
 
             let alpha_t = alpha_1.clone().slice([i..i + 1]);
             let beta_t = beta.clone().slice([i..i + 1]);
@@ -575,24 +575,25 @@ impl<B: Backend> DiffusionModel<B> {
             let alpha_sqrt = alpha_t.clone().sqrt();
             let alpha_sqrt_1 = (Tensor::ones_like(&alpha_t) - alpha_t.clone()).sqrt();
 
-            let z_2d: Tensor<B, 2> = z.clone().flatten(1, 3);
-            let alpha_sqrt_1_exp = alpha_sqrt_1.expand([latent_dimen * 16]).unsqueeze();
-            let alpha_sqrt_exp = alpha_sqrt.expand([latent_dimen * 16]).unsqueeze();
-            let pred_x0_2d = (z_2d - noise_pred_2d.clone() * alpha_sqrt_1_exp) / alpha_sqrt_exp;
-            let pred_x0 = pred_x0_2d.clone().reshape([batch_size, latent_dimen, 4, 4]);
+            // Reshape for broadcasting - FIXED
+            let [b, c, h, w] = z.dims();
+            let alpha_sqrt_exp = alpha_sqrt.reshape([1, 1, 1, 1]).expand([b, c, h, w]);
+            let alpha_sqrt_1_exp = alpha_sqrt_1.reshape([1, 1, 1, 1]).expand([b, c, h, w]);
+            
+            let pred_x0 = (z.clone() - noise_pred.clone() * alpha_sqrt_1_exp) / alpha_sqrt_exp;
 
             if i > 0 {
                 let alpha_prev = alpha_1.clone().slice([i - 1..i]);
                 let alpha_prev_sqrt = alpha_prev.clone().sqrt();
                 let alpha_prev_1 = (Tensor::ones_like(&alpha_prev) - alpha_prev).sqrt();
 
-                let alpha_prev_sqrt_exp = alpha_prev_sqrt.expand([latent_dimen * 16]).unsqueeze();
-                let alpha_prev_1_exp = alpha_prev_1.expand([latent_dimen * 16]).unsqueeze();
-                let z_new_2d: Tensor<B, 2> = alpha_prev_sqrt_exp * pred_x0_2d.clone() + alpha_prev_1_exp * noise_pred_2d;
-                z = z_new_2d.reshape([batch_size, latent_dimen, 4, 4]);
+                let alpha_prev_sqrt_exp = alpha_prev_sqrt.reshape([1, 1, 1, 1]).expand([b, c, h, w]);
+                let alpha_prev_1_exp = alpha_prev_1.reshape([1, 1, 1, 1]).expand([b, c, h, w]);
+                
+                z = alpha_prev_sqrt_exp * pred_x0.clone() + alpha_prev_1_exp * noise_pred;
 
                 let noise = Tensor::random_like(&z, burn::tensor::Distribution::Normal(0.0, 1.0));
-                let beta_t_sqrt_exp = beta_t.sqrt().expand([latent_dimen, 4, 4]).unsqueeze();
+                let beta_t_sqrt_exp = beta_t.sqrt().reshape([1, 1, 1, 1]).expand([b, c, h, w]);
                 z = z + beta_t_sqrt_exp * noise;
             } else {
                 z = pred_x0;
@@ -726,15 +727,18 @@ impl Image {
         let img = img.resize_exact(self.width as u32, self.height as u32, FilterType::Lanczos3);
         let img = img.to_rgb8();
 
-        let mut data = Vec::with_capacity(self.channels * self.height * self.width);
-
+        // Correct channel-first layout (C, H, W)
+        let mut data = vec![vec![]; 3];
+        
         for pixel in img.pixels() {
-            data.push((pixel[0] as f32 / 255.0) * 2.0 - 1.0);
-            data.push((pixel[1] as f32 / 255.0) * 2.0 - 1.0);
-            data.push((pixel[2] as f32 / 255.0) * 2.0 - 1.0);
+            data[0].push((pixel[0] as f32 / 255.0) * 2.0 - 1.0);
+            data[1].push((pixel[1] as f32 / 255.0) * 2.0 - 1.0);
+            data[2].push((pixel[2] as f32 / 255.0) * 2.0 - 1.0);
         }
+        
+        let flat_data: Vec<f32> = data.into_iter().flatten().collect();
 
-        let tensor: Tensor<B, 4> = Tensor::<B, 1>::from_floats(data.as_slice(), device)
+        let tensor: Tensor<B, 4> = Tensor::<B, 1>::from_floats(flat_data.as_slice(), device)
             .reshape([1, self.channels, self.height, self.width]);
         Ok(tensor)
     }
@@ -786,10 +790,12 @@ pub fn train_ldm_epoch<B: Backend>(
 }
 
 fn main() {
-    use burn::backend::{Autodiff, Wgpu};
-
-    type Backend = Autodiff<Wgpu<f32>>;
-    let device = Default::default();
+    use burn::backend::wgpu::WgpuDevice;
+    
+    println!("Initializing GPU...");
+    type Backend = Autodiff<WgpuBackend>;
+    let device = WgpuDevice::default();
+    println!("Using device: {:?}", device);
 
     let in_channels = 3;
     let latent_dim = 256;
@@ -842,18 +848,18 @@ fn main() {
     println!("Generating image");
     // Generate and save an image
     let generated = model.sample(latent_dim, 1, &device);
-    let generated_img: burn::tensor::Tensor<burn::backend::Autodiff<burn::backend::Wgpu<f32>>, 3> = generated.squeeze(0); // Remove batch dim
+    let generated_img = generated.squeeze(0); // [C, H, W]
+
+    // Convert from [C, H, W] to pixel data
     let data: Vec<f32> = generated_img.to_data().to_vec().unwrap();
+
     let img = image::RgbImage::from_fn(32, 32, |x, y| {
-        let idx = (y * 32 + x) as usize;
-        let r_idx = idx * 3;
-        let g_idx = idx * 3 + 1;
-        let b_idx = idx * 3 + 2;
-        image::Rgb([
-            ((data[r_idx] * 0.5 + 0.5).clamp(0.0, 1.0) * 255.0) as u8,
-            ((data[g_idx] * 0.5 + 0.5).clamp(0.0, 1.0) * 255.0) as u8,
-            ((data[b_idx] * 0.5 + 0.5).clamp(0.0, 1.0) * 255.0) as u8,
-        ])
+        let pixel_idx = (y * 32 + x) as usize;
+        // Data is in CHW format: all R, then all G, then all B
+        let r = ((data[pixel_idx] * 0.5 + 0.5).clamp(0.0, 1.0) * 255.0) as u8;
+        let g = ((data[32 * 32 + pixel_idx] * 0.5 + 0.5).clamp(0.0, 1.0) * 255.0) as u8;
+        let b = ((data[2 * 32 * 32 + pixel_idx] * 0.5 + 0.5).clamp(0.0, 1.0) * 255.0) as u8;
+        image::Rgb([r, g, b])
     });
     img.save("generated_image.png").unwrap();
     println!("Generated image saved to generated_image.png");
