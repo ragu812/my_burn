@@ -2,7 +2,7 @@ use burn::tensor::Int;
 use burn::tensor::Tensor;
 use burn::tensor::activation;
 use burn::tensor::backend::Backend;
-use burn::backend::{Autodiff, WgpuBackend};
+use burn::backend::{Autodiff, Wgpu};
 use burn::module::Module;
 use burn::nn::conv::{Conv2d, Conv2dConfig, ConvTranspose2d, ConvTranspose2dConfig};
 use burn::nn::{BatchNorm, BatchNormConfig, Linear, LinearConfig, PaddingConfig2d};
@@ -793,7 +793,7 @@ fn main() {
     use burn::backend::wgpu::WgpuDevice;
     
     println!("Initializing GPU...");
-    type Backend = Autodiff<WgpuBackend>;
+    type Backend = Autodiff<Wgpu>;
     let device = WgpuDevice::default();
     println!("Using device: {:?}", device);
 
