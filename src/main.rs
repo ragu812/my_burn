@@ -1,4 +1,3 @@
-use burn::backend::Wgpu;
 use burn::tensor::Int;
 use burn::tensor::Tensor;
 use burn::tensor::activation;
@@ -829,7 +828,7 @@ fn main() {
 
                 let grads = loss.backward();
                 let grad_params = GradientsParams::from_grads(grads, &model);
-                model = optimizer.step(1e-4, model, grad_params);
+                model = optimizer.step(1e-4f64, model, grad_params);
                 total_loss += loss.into_scalar().elem::<f32>();
             }
         }
