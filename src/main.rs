@@ -39,20 +39,20 @@ impl<B: Backend> SimpleEncoder<B> {
                 .init(device),
             bn_2: BatchNormConfig::new(128).init(device),
 
-            conv3: Conv2dConfig::new([128, 256], [3, 3])
-                .with_stride([1, 1])
-                .with_padding(PaddingConfig2d::Explicit(1, 1))
-                .init(device),
-            bn_3: BatchNormConfig::new(256).init(device),
+    conv3: Conv2dConfig::new([128, 256], [3, 3])
+        .with_stride([2, 2])
+        .with_padding(PaddingConfig2d::Explicit(1, 1))
+        .init(device),
+    bn_3: BatchNormConfig::new(256).init(device),
 
-            conv4: Conv2dConfig::new([256, 512], [3, 3])
-                .with_stride([1, 1])
-                .with_padding(PaddingConfig2d::Explicit(1, 1))
-                .init(device),
+    conv4: Conv2dConfig::new([256, 512], [3, 3])
+        .with_stride([2, 2])
+        .with_padding(PaddingConfig2d::Explicit(1, 1))
+        .init(device),
             bn_4: BatchNormConfig::new(512).init(device),
 
-            mean: LinearConfig::new(512 * 4 * 4, latent_dimen).init(device),
-            variance: LinearConfig::new(512 * 4 * 4, latent_dimen).init(device),
+            mean: LinearConfig::new(512 * 4 * 4, latent_dimen * 16).init(device),
+            variance: LinearConfig::new(512 * 4 * 4, latent_dimen * 16).init(device),
             latent_dimen,
         }
     }
@@ -96,28 +96,28 @@ pub struct SimpleDecoder<B: Backend> {
 impl<B: Backend> SimpleDecoder<B> {
     pub fn new(output: usize, latent_dimen: usize, device: &B::Device) -> Self {
         Self {
-            transfer: LinearConfig::new(latent_dimen, 512 * 4 * 4).init(device),
+            transfer: LinearConfig::new(latent_dimen * 16, 512 * 4 * 4).init(device),
 
             reverse1: ConvTranspose2dConfig::new([512, 256], [3, 3])
-                .with_stride([1, 1])
+                .with_stride([2, 2])
                 .with_padding([1, 1])
                 .init(device),
             bn_1: BatchNormConfig::new(256).init(device),
 
             reverse2: ConvTranspose2dConfig::new([256, 128], [3, 3])
-                .with_stride([1, 1])
+                .with_stride([2, 2])
                 .with_padding([1, 1])
                 .init(device),
             bn_2: BatchNormConfig::new(128).init(device),
 
             reverse3: ConvTranspose2dConfig::new([128, 64], [3, 3])
-                .with_stride([1, 1])
+                .with_stride([2, 2])
                 .with_padding([1, 1])
                 .init(device),
             bn_3: BatchNormConfig::new(64).init(device),
 
             reverse4: ConvTranspose2dConfig::new([64, output], [3, 3])
-                .with_stride([1, 1])
+                .with_stride([2, 2])
                 .with_padding([1, 1])
                 .init(device),
 
@@ -126,8 +126,9 @@ impl<B: Backend> SimpleDecoder<B> {
         }
     }
 
-    pub fn forward(&self, input2: Tensor<B, 2>) -> Tensor<B, 4> {
-        let y = self.transfer.forward(input2);
+    pub fn forward(&self, input2: Tensor<B, 4>) -> Tensor<B, 4> {
+        let input2_flat: Tensor<B, 2> = input2.flatten(1, 3);
+        let y = self.transfer.forward(input2_flat);
         let y = activation::relu(y);
         let batch_size = y.dims()[0];
         let y = y.reshape([batch_size, 512, 4, 4]);
@@ -162,10 +163,11 @@ impl<B: Backend> Vae<B> {
         }
     }
 
-    pub fn parametrize(&self, mean: Tensor<B, 2>, variance: Tensor<B, 2>) -> Tensor<B, 2> {
+    pub fn parametrize(&self, mean: Tensor<B, 2>, variance: Tensor<B, 2>) -> Tensor<B, 4> {
         let std = (variance.clone() * 0.5).exp();
         let noise = Tensor::random_like(&std, burn::tensor::Distribution::Normal(0.0, 1.0));
-        mean + noise * std
+        let z = mean + noise * std;
+        z.clone().reshape([z.dims()[0], self.encoder.latent_dimen, 4, 4])
     }
 
     pub fn forward(&self, x: Tensor<B, 4>) -> (Tensor<B, 4>, Tensor<B, 2>, Tensor<B, 2>) {
@@ -175,12 +177,12 @@ impl<B: Backend> Vae<B> {
         (reconstruction, mean, variance)
     }
 
-    pub fn encode(&self, x: Tensor<B, 4>) -> Tensor<B, 2> {
+    pub fn encode(&self, x: Tensor<B, 4>) -> Tensor<B, 4> {
         let (mean, variance) = self.encoder.forward(x);
         self.parametrize(mean, variance)
     }
 
-    pub fn decode(&self, y: Tensor<B, 2>) -> Tensor<B, 4> {
+    pub fn decode(&self, y: Tensor<B, 4>) -> Tensor<B, 4> {
         self.decoder.forward(y)
     }
 
@@ -484,15 +486,17 @@ impl<B: Backend> DiffusionModel<B> {
 
     pub fn add_noise(
         &self,
-        x: Tensor<B, 2>,
+        x: Tensor<B, 4>,
         time: Tensor<B, 1, Int>,
         device: &B::Device,
-    ) -> (Tensor<B, 2>, Tensor<B, 2>) {
+    ) -> (Tensor<B, 4>, Tensor<B, 4>) {
         let alpha = self.get_alphas(device);
         let noise = Tensor::random_like(&x, burn::tensor::Distribution::Normal(0.0, 1.0));
 
         let batch_size = x.dims()[0];
-        let latent_dimen = x.dims()[1];
+        let channels = x.dims()[1];
+        let height = x.dims()[2];
+        let width = x.dims()[3];
 
         let mut noisy_samples = Vec::new();
 
@@ -504,11 +508,11 @@ impl<B: Backend> DiffusionModel<B> {
             let sqrt_alpha = alpha_t.clone().sqrt();
             let sqrt_one_minus_alpha = (Tensor::ones_like(&alpha_t) - alpha_t).sqrt();
 
-            let xi = x.clone().slice([i..i + 1, 0..latent_dimen]);
-            let noise_i = noise.clone().slice([i..i + 1, 0..latent_dimen]);
+            let xi = x.clone().slice([i..i + 1, 0..channels, 0..height, 0..width]);
+            let noise_i = noise.clone().slice([i..i + 1, 0..channels, 0..height, 0..width]);
 
-            let sqrt_alpha_exp = sqrt_alpha.clone().expand([1, latent_dimen]);
-            let sqrt_one_minus_alpha_exp = sqrt_one_minus_alpha.clone().expand([1, latent_dimen]);
+            let sqrt_alpha_exp = sqrt_alpha.clone().expand([1, channels, height, width]);
+            let sqrt_one_minus_alpha_exp = sqrt_one_minus_alpha.clone().expand([1, channels, height, width]);
             let noisy_i = xi * sqrt_alpha_exp + noise_i * sqrt_one_minus_alpha_exp;
 
             noisy_samples.push(noisy_i);
@@ -533,14 +537,12 @@ impl<B: Backend> DiffusionModel<B> {
         let t = Tensor::from_ints(t_values.as_slice(), device);
         let (z_noisy, noise) = self.add_noise(z, t.clone(), device);
 
-        let z_4d = z_noisy.reshape([batch_size, self.latent_dimen, 1, 1]);
-
         let t_emb = sin_time_addition(device, t, 256);
 
-        let noise_pred = self.noise_predict(z_4d, t_emb);
-        let noise_pred_2d = noise_pred.flatten(1, 3);
+        let noise_pred = self.noise_predict(z_noisy, t_emb);
+        let noise_pred_2d: Tensor<B, 2> = noise_pred.flatten(1, 3);
 
-        let noise_2d = noise.reshape([batch_size, self.latent_dimen]);
+        let noise_2d: Tensor<B, 2> = noise.flatten(1, 3);
 
         (noise_pred_2d - noise_2d).powf_scalar(2.0).mean()
     }
@@ -551,8 +553,8 @@ impl<B: Backend> DiffusionModel<B> {
         batch_size: usize,
         device: &B::Device,
     ) -> Tensor<B, 4> {
-        let mut z: Tensor<B, 2> = Tensor::random(
-            [batch_size, latent_dimen],
+        let mut z: Tensor<B, 4> = Tensor::random(
+            [batch_size, latent_dimen, 4, 4],
             burn::tensor::Distribution::Normal(0.0, 1.0),
             device,
         );
@@ -564,9 +566,8 @@ impl<B: Backend> DiffusionModel<B> {
             let i_tensor = Tensor::from_ints(vec![i as i32; batch_size].as_slice(), device);
             let i_emb = sin_time_addition(device, i_tensor, 256);
 
-            let z_4d = z.clone().reshape([batch_size, latent_dimen, 1, 1]);
-            let noise_pred = self.noise_predict(z_4d, i_emb);
-            let noise_pred_2d = noise_pred.flatten(1, 3);
+            let noise_pred = self.noise_predict(z.clone(), i_emb);
+            let noise_pred_2d: Tensor<B, 2> = noise_pred.flatten(1, 3);
 
             let alpha_t = alpha_1.clone().slice([i..i + 1]);
             let beta_t = beta.clone().slice([i..i + 1]);
@@ -574,21 +575,24 @@ impl<B: Backend> DiffusionModel<B> {
             let alpha_sqrt = alpha_t.clone().sqrt();
             let alpha_sqrt_1 = (Tensor::ones_like(&alpha_t) - alpha_t.clone()).sqrt();
 
-            let alpha_sqrt_1_exp = alpha_sqrt_1.expand([latent_dimen]).unsqueeze();
-            let alpha_sqrt_exp = alpha_sqrt.expand([latent_dimen]).unsqueeze();
-            let pred_x0 = (z.clone() - noise_pred_2d.clone() * alpha_sqrt_1_exp) / alpha_sqrt_exp;
+            let z_2d: Tensor<B, 2> = z.clone().flatten(1, 3);
+            let alpha_sqrt_1_exp = alpha_sqrt_1.expand([latent_dimen * 16]).unsqueeze();
+            let alpha_sqrt_exp = alpha_sqrt.expand([latent_dimen * 16]).unsqueeze();
+            let pred_x0_2d = (z_2d - noise_pred_2d.clone() * alpha_sqrt_1_exp) / alpha_sqrt_exp;
+            let pred_x0 = pred_x0_2d.clone().reshape([batch_size, latent_dimen, 4, 4]);
 
             if i > 0 {
                 let alpha_prev = alpha_1.clone().slice([i - 1..i]);
                 let alpha_prev_sqrt = alpha_prev.clone().sqrt();
                 let alpha_prev_1 = (Tensor::ones_like(&alpha_prev) - alpha_prev).sqrt();
 
-                let alpha_prev_sqrt_exp = alpha_prev_sqrt.expand([latent_dimen]).unsqueeze();
-                let alpha_prev_1_exp = alpha_prev_1.expand([latent_dimen]).unsqueeze();
-                z = alpha_prev_sqrt_exp * pred_x0 + alpha_prev_1_exp * noise_pred_2d;
+                let alpha_prev_sqrt_exp = alpha_prev_sqrt.expand([latent_dimen * 16]).unsqueeze();
+                let alpha_prev_1_exp = alpha_prev_1.expand([latent_dimen * 16]).unsqueeze();
+                let z_new_2d: Tensor<B, 2> = alpha_prev_sqrt_exp * pred_x0_2d.clone() + alpha_prev_1_exp * noise_pred_2d;
+                z = z_new_2d.reshape([batch_size, latent_dimen, 4, 4]);
 
                 let noise = Tensor::random_like(&z, burn::tensor::Distribution::Normal(0.0, 1.0));
-                let beta_t_sqrt_exp = beta_t.sqrt().expand([latent_dimen]).unsqueeze();
+                let beta_t_sqrt_exp = beta_t.sqrt().expand([latent_dimen, 4, 4]).unsqueeze();
                 z = z + beta_t_sqrt_exp * noise;
             } else {
                 z = pred_x0;
@@ -797,9 +801,7 @@ fn main() {
     let optimizer_config = AdamConfig::new();
     let mut optimizer = optimizer_config.init::<Backend, DiffusionModel<Backend>>();
 
-    println!("Model created successfully!");
-
-    let dataset = Image::directory(r"C:\Users\M.KUMAR\Desktop\Pictures", 4, 4).unwrap();
+    let dataset = Image::directory(r"Pictures", 32, 32).unwrap();
 
     println!("Starting training...");
     for epoch in 0..num_epochs {
@@ -833,7 +835,7 @@ fn main() {
 
     save_model(&model, "trained_model.bin").unwrap();
 
-    println!("Generating image...");
+    println!("Generating image");
     // Generate and save an image
     let generated = model.sample(latent_dim, 1, &device);
     let generated_img: burn::tensor::Tensor<burn::backend::Autodiff<burn::backend::NdArray<f32>>, 3> = generated.squeeze(0); // Remove batch dim
@@ -843,11 +845,11 @@ fn main() {
         let r_idx = idx * 3;
         let g_idx = idx * 3 + 1;
         let b_idx = idx * 3 + 2;
-    image::Rgb([
-        ((data[r_idx] * 0.5 + 0.5).clamp(0.0, 1.0) * 255.0) as u8,
-        ((data[g_idx] * 0.5 + 0.5).clamp(0.0, 1.0) * 255.0) as u8,
-        ((data[b_idx] * 0.5 + 0.5).clamp(0.0, 1.0) * 255.0) as u8,
-    ])
+        image::Rgb([
+            ((data[r_idx] * 0.5 + 0.5).clamp(0.0, 1.0) * 255.0) as u8,
+            ((data[g_idx] * 0.5 + 0.5).clamp(0.0, 1.0) * 255.0) as u8,
+            ((data[b_idx] * 0.5 + 0.5).clamp(0.0, 1.0) * 255.0) as u8,
+        ])
     });
     img.save("generated_image.png").unwrap();
     println!("Generated image saved to generated_image.png");
