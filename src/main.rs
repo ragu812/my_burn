@@ -147,7 +147,8 @@ impl<B: Backend> Vae<B> {
         let std = (variance.clone() * 0.5).exp();
         let noise = Tensor::random_like(&std, burn::tensor::Distribution::Normal(0.0, 1.0));
         let z = mean + noise * std;
-        z.clone().reshape([z.dims()[0], self.encoder.latent_dimen, 4, 4])
+        // Reshape to [batch_size, latent_dimen, 2, 4] since latent_dimen * 2 * 4 = latent_dimen * 8
+        z.clone().reshape([z.dims()[0], self.encoder.latent_dimen, 2, 4])
     }
 
     pub fn forward(&self, x: Tensor<B, 4>) -> (Tensor<B, 4>, Tensor<B, 2>, Tensor<B, 2>) {
