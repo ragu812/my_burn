@@ -529,57 +529,61 @@ impl<B: Backend> DiffusionModel<B> {
     }
 
     pub fn sample(
-        &self,
-        latent_dimen: usize,
-        batch_size: usize,
-        device: &B::Device,
-    ) -> Tensor<B, 4> {
-        let mut z: Tensor<B, 4> = Tensor::random(
-            [batch_size, latent_dimen, 4, 4],
-            burn::tensor::Distribution::Normal(0.0, 1.0),
-            device,
-        );
+    &self,
+    batch_size: usize,
+    device: &B::Device,
+) -> Tensor<B, 4> {
+    // Initialize with correct latent dimensions matching the VAE output
+    // VAE outputs [batch, latent_dimen, 2, 4]
+    let mut z: Tensor<B, 4> = Tensor::random(
+        [batch_size, self.latent_dimen, 2, 4],  // Match VAE latent space
+        burn::tensor::Distribution::Normal(0.0, 1.0),
+        device,
+    );
 
-        let beta = self.get_betas(device);
-        let alpha_1 = self.get_alphas(device);
+    let beta = self.get_betas(device);
+    let alpha_1 = self.get_alphas(device);
 
-        for i in (0..self.num_time).rev() {
-            let i_tensor = Tensor::from_ints(vec![i as i32; batch_size].as_slice(), device);
-            let i_emb = sin_time_addition(device, i_tensor, 256);
+    for i in (0..self.num_time).rev() {
+        let i_tensor = Tensor::from_ints(vec![i as i32; batch_size].as_slice(), device);
+        let i_emb = sin_time_addition(device, i_tensor, 256);
 
-            let noise_pred = self.noise_predict(z.clone(), i_emb);
+        let noise_pred = self.noise_predict(z.clone(), i_emb);
 
-            let alpha_t = alpha_1.clone().slice([i..i + 1]);
-            let beta_t = beta.clone().slice([i..i + 1]);
+        let alpha_t = alpha_1.clone().slice([i..i + 1]);
+        let beta_t = beta.clone().slice([i..i + 1]);
 
-            let alpha_sqrt = alpha_t.clone().sqrt();
-            let alpha_sqrt_1 = (Tensor::ones_like(&alpha_t) - alpha_t.clone()).sqrt();
+        let alpha_sqrt = alpha_t.clone().sqrt();
+        let alpha_sqrt_1 = (Tensor::ones_like(&alpha_t) - alpha_t.clone()).sqrt();
 
-            // Reshape for broadcasting - FIXED
-            let [b, c, h, w] = z.dims();
-            let alpha_sqrt_exp = alpha_sqrt.reshape([1, 1, 1, 1]).expand([b, c, h, w]);
-            let alpha_sqrt_1_exp = alpha_sqrt_1.reshape([1, 1, 1, 1]).expand([b, c, h, w]);
+        let [b, c, h, w] = z.dims();
+        let alpha_sqrt_exp = alpha_sqrt.reshape([1, 1, 1, 1]).expand([b, c, h, w]);
+        let alpha_sqrt_1_exp = alpha_sqrt_1.reshape([1, 1, 1, 1]).expand([b, c, h, w]);
+        
+        let pred_x0 = (z.clone() - noise_pred.clone() * alpha_sqrt_1_exp) / alpha_sqrt_exp;
+
+        if i > 0 {
+            let alpha_prev = alpha_1.clone().slice([i - 1..i]);
+            let alpha_prev_sqrt = alpha_prev.clone().sqrt();
+            let alpha_prev_1 = (Tensor::ones_like(&alpha_prev) - alpha_prev).sqrt();
+
+            let alpha_prev_sqrt_exp = alpha_prev_sqrt.reshape([1, 1, 1, 1]).expand([b, c, h, w]);
+            let alpha_prev_1_exp = alpha_prev_1.reshape([1, 1, 1, 1]).expand([b, c, h, w]);
             
-            let pred_x0 = (z.clone() - noise_pred.clone() * alpha_sqrt_1_exp) / alpha_sqrt_exp;
+            z = alpha_prev_sqrt_exp * pred_x0.clone() + alpha_prev_1_exp * noise_pred;
 
-            if i > 0 {
-                let alpha_prev = alpha_1.clone().slice([i - 1..i]);
-                let alpha_prev_sqrt = alpha_prev.clone().sqrt();
-                let alpha_prev_1 = (Tensor::ones_like(&alpha_prev) - alpha_prev).sqrt();
-
-                let alpha_prev_sqrt_exp = alpha_prev_sqrt.reshape([1, 1, 1, 1]).expand([b, c, h, w]);
-                let alpha_prev_1_exp = alpha_prev_1.reshape([1, 1, 1, 1]).expand([b, c, h, w]);
-                
-                z = alpha_prev_sqrt_exp * pred_x0.clone() + alpha_prev_1_exp * noise_pred;
-
-                let noise = Tensor::random_like(&z, burn::tensor::Distribution::Normal(0.0, 1.0));
-                let beta_t_sqrt_exp = beta_t.sqrt().reshape([1, 1, 1, 1]).expand([b, c, h, w]);
-                z = z + beta_t_sqrt_exp * noise;
-            } else {
-                z = pred_x0;
-            }
+            let noise = Tensor::random_like(&z, burn::tensor::Distribution::Normal(0.0, 1.0));
+            let beta_t_sqrt_exp = beta_t.sqrt().reshape([1, 1, 1, 1]).expand([b, c, h, w]);
+            z = z + beta_t_sqrt_exp * noise;
+        } else {
+            z = pred_x0;
         }
-        self.vae.decode(z)
+        
+        if i % 100 == 0 {
+            println!("  Denoising step {}/{}", self.num_time - i, self.num_time);
+        }
+    }
+    self.vae.decode(z)
     }
 }
 
@@ -769,6 +773,7 @@ pub fn train_ldm_epoch<B: Backend>(
     total_loss / num_batches as f32
 }
 
+
 fn main() {
     use burn::backend::wgpu::WgpuDevice;
     
@@ -780,7 +785,7 @@ fn main() {
     let in_channels = 3;
     let latent_dim = 256;
     let num_timesteps = 2000;
-    let batch_size = 1;
+    let batch_size = 4; // INCREASED batch size for better GPU utilization
     let num_epochs = 25;
 
     let mut model = DiffusionModel::<Backend>::new(&device, latent_dim, in_channels, num_timesteps);
@@ -789,48 +794,59 @@ fn main() {
 
     let dataset = Image::directory(r"Pictures", 32, 32).unwrap();
 
-    println!("Starting training...");
+    println!("Starting training with {} images...", dataset.size);
+    
     for epoch in 0..num_epochs {
         let mut total_loss = 0.0f32;
         let num_batches = dataset.size / batch_size;
 
-        println!("Epoch: {}", epoch);
+        println!("\n=== Epoch {}/{} ===", epoch + 1, num_epochs);
 
-        for batch_idx in 0..num_batches{
-            let mut batch_images = Vec::new();
-
-            println!("Batch: {}", batch_idx);
-
-            for i in 0..batch_size {
-                let idx = batch_idx * batch_size + i;
-                if let Ok(img) = dataset.get::<Backend>(idx, &device) {
-                    batch_images.push(img);
-                }
-            }
-
-            if !batch_images.is_empty() {
-                let images = Tensor::cat(batch_images, 0);
+        for batch_idx in 0..num_batches {
+            // Prepare batch indices
+            let start_idx = batch_idx * batch_size;
+            let end_idx = (start_idx + batch_size).min(dataset.size);
+            let indices: Vec<usize> = (start_idx..end_idx).collect();
+            
+            // Load batch efficiently
+            if let Ok(images) = dataset.get_batch::<Backend>(&indices, &device) {
+                // Forward pass - this runs on GPU
                 let loss = model.forward(images, &device);
-
+                
+                // Backward pass - compute gradients on GPU
                 let grads = loss.backward();
+                
+                // Extract gradients and update model
                 let grad_params = GradientsParams::from_grads(grads, &model);
                 model = optimizer.step(1e-4f64, model, grad_params);
-                total_loss += loss.into_scalar().elem::<f32>();
+                
+                let loss_val = loss.into_scalar().elem::<f32>();
+                total_loss += loss_val;
+                
+                if batch_idx % 10 == 0 {
+                    println!("  Batch {}/{}: Loss = {:.4}", batch_idx, num_batches, loss_val);
+                }
             }
         }
 
         let avg_loss = total_loss / num_batches as f32;
-        println!("Epoch {}: Loss = {:.4}", epoch + 1, avg_loss);
+        println!("Epoch {}: Average Loss = {:.4}", epoch + 1, avg_loss);
+        
+        // Save checkpoint every 5 epochs
+        if (epoch + 1) % 5 == 0 {
+            let checkpoint_path = format!("checkpoint_epoch_{}.bin", epoch + 1);
+            save_model(&model, &checkpoint_path).unwrap();
+        }
     }
 
     save_model(&model, "trained_model.bin").unwrap();
 
-    // Replace the image generation section in your main() function with this:
-
-    println!("Generating image");
+    println!("\n=== Generating sample image ===");
     // Generate and save an image
-    let generated = model.sample(latent_dim, 1, &device);
-    let generated_img: Tensor<Backend, 3> = generated.squeeze::<3>(0); // Explicitly specify 3D tensor
+    // IMPORTANT: The sample function expects the latent dimension as channels
+    // Based on your VAE, the latent has shape [batch, latent_dim, 2, 4]
+    let generated = model.sample(1, &device);
+    let generated_img: Tensor<Backend, 3> = generated.squeeze::<3>(0);
 
     // Convert from [C, H, W] to pixel data
     let data: Vec<f32> = generated_img.to_data().to_vec().unwrap();
