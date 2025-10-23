@@ -18,8 +18,6 @@ pub struct SimpleEncoder<B: Backend> {
     bn_2: BatchNorm<B, 2>,
     conv3: Conv2d<B>,
     bn_3: BatchNorm<B, 2>,
-    conv4: Conv2d<B>,
-    bn_4: BatchNorm<B, 2>,
     mean: Linear<B>,
     variance: Linear<B>,
     latent_dimen: usize,
@@ -28,32 +26,27 @@ pub struct SimpleEncoder<B: Backend> {
 impl<B: Backend> SimpleEncoder<B> {
     pub fn new(in_channels: usize, latent_dimen: usize, device: &B::Device) -> Self {
         Self {
-            conv1: Conv2dConfig::new([in_channels, 64], [3, 3])
+            // Reduced channel sizes: 32, 64, 128 instead of 64, 128, 256, 512
+            conv1: Conv2dConfig::new([in_channels, 32], [3, 3])
                 .with_stride([1, 1])
                 .with_padding(PaddingConfig2d::Explicit(1, 1))
                 .init(device),
-            bn_1: BatchNormConfig::new(64).init(device),
+            bn_1: BatchNormConfig::new(32).init(device),
 
-            conv2: Conv2dConfig::new([64, 128], [3, 3])
-                .with_stride([1, 1])
+            conv2: Conv2dConfig::new([32, 64], [3, 3])
+                .with_stride([2, 2])
                 .with_padding(PaddingConfig2d::Explicit(1, 1))
                 .init(device),
-            bn_2: BatchNormConfig::new(128).init(device),
+            bn_2: BatchNormConfig::new(64).init(device),
 
-    conv3: Conv2dConfig::new([128, 256], [3, 3])
-        .with_stride([2, 2])
-        .with_padding(PaddingConfig2d::Explicit(1, 1))
-        .init(device),
-    bn_3: BatchNormConfig::new(256).init(device),
+            conv3: Conv2dConfig::new([64, 128], [3, 3])
+                .with_stride([2, 2])
+                .with_padding(PaddingConfig2d::Explicit(1, 1))
+                .init(device),
+            bn_3: BatchNormConfig::new(128).init(device),
 
-    conv4: Conv2dConfig::new([256, 512], [3, 3])
-        .with_stride([2, 2])
-        .with_padding(PaddingConfig2d::Explicit(1, 1))
-        .init(device),
-            bn_4: BatchNormConfig::new(512).init(device),
-
-            mean: LinearConfig::new(512 * 8 * 8, latent_dimen * 16).init(device),
-            variance: LinearConfig::new(512 * 8 * 8, latent_dimen * 16).init(device),
+            mean: LinearConfig::new(128 * 8 * 8, latent_dimen * 8).init(device),
+            variance: LinearConfig::new(128 * 8 * 8, latent_dimen * 8).init(device),
             latent_dimen,
         }
     }
@@ -66,9 +59,6 @@ impl<B: Backend> SimpleEncoder<B> {
         let x = activation::relu(x);
 
         let x = self.bn_3.forward(self.conv3.forward(x));
-        let x = activation::relu(x);
-
-        let x = self.bn_4.forward(self.conv4.forward(x));
         let x = activation::relu(x);
 
         let x = x.flatten(1, 3);
@@ -88,8 +78,6 @@ pub struct SimpleDecoder<B: Backend> {
     reverse2: ConvTranspose2d<B>,
     bn_2: BatchNorm<B, 2>,
     reverse3: ConvTranspose2d<B>,
-    bn_3: BatchNorm<B, 2>,
-    reverse4: ConvTranspose2d<B>,
     latent_dimen: usize,
     output: usize,
 }
@@ -97,27 +85,21 @@ pub struct SimpleDecoder<B: Backend> {
 impl<B: Backend> SimpleDecoder<B> {
     pub fn new(output: usize, latent_dimen: usize, device: &B::Device) -> Self {
         Self {
-            transfer: LinearConfig::new(latent_dimen * 16, 512 * 8 * 8).init(device),
+            transfer: LinearConfig::new(latent_dimen * 8, 128 * 8 * 8).init(device),
 
-            reverse1: ConvTranspose2dConfig::new([512, 256], [3, 3])
+            reverse1: ConvTranspose2dConfig::new([128, 64], [3, 3])
                 .with_stride([2, 2])
                 .with_padding([1, 1])
                 .init(device),
-            bn_1: BatchNormConfig::new(256).init(device),
+            bn_1: BatchNormConfig::new(64).init(device),
 
-            reverse2: ConvTranspose2dConfig::new([256, 128], [3, 3])
+            reverse2: ConvTranspose2dConfig::new([64, 32], [3, 3])
                 .with_stride([2, 2])
                 .with_padding([1, 1])
                 .init(device),
-            bn_2: BatchNormConfig::new(128).init(device),
+            bn_2: BatchNormConfig::new(32).init(device),
 
-            reverse3: ConvTranspose2dConfig::new([128, 64], [3, 3])
-                .with_stride([1, 1])
-                .with_padding([1, 1])
-                .init(device),
-            bn_3: BatchNormConfig::new(64).init(device),
-
-            reverse4: ConvTranspose2dConfig::new([64, output], [3, 3])
+            reverse3: ConvTranspose2dConfig::new([32, output], [3, 3])
                 .with_stride([1, 1])
                 .with_padding([1, 1])
                 .init(device),
@@ -132,20 +114,17 @@ impl<B: Backend> SimpleDecoder<B> {
         let y = self.transfer.forward(input2_flat);
         let y = activation::relu(y);
         let batch_size = y.dims()[0];
-        let y = y.reshape([batch_size, 512, 8, 8]);
+        let y = y.reshape([batch_size, 128, 8, 8]);
 
         let y = self.reverse1.forward(y);
         let y = self.bn_1.forward(y);
         let y = activation::relu(y);
+        
         let y = self.reverse2.forward(y);
         let y = self.bn_2.forward(y);
         let y = activation::relu(y);
 
         let y = self.reverse3.forward(y);
-        let y = self.bn_3.forward(y);
-        let y = activation::relu(y);
-
-        let y = self.reverse4.forward(y);
         activation::tanh(y)
     }
 }

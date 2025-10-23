@@ -9,3 +9,7 @@ burn = { version = "0.18.0", default-features=false, features = ["train","wgpu",
 burn-autodiff = "0.18.0"
 image = "0.25.8"
 rand = "0.9.2"
+
+[profile.release]
+   opt-level = 3
+   lto = true
