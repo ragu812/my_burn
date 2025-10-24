@@ -784,9 +784,9 @@ fn main() {
 
     let in_channels = 3;
     let latent_dim = 256;
-    let num_timesteps = 2000;
+    let num_timesteps = 1000;
     let batch_size = 6; // INCREASED batch size for better GPU utilization
-    let num_epochs = 25;
+    let num_epochs = 6;
 
     let mut model = DiffusionModel::<Backend>::new(&device, latent_dim, in_channels, num_timesteps);
     let optimizer_config = AdamConfig::new();
@@ -823,7 +823,7 @@ fn main() {
                 let loss_val = loss.into_scalar().elem::<f32>();
                 total_loss += loss_val;
                 
-                if batch_idx % 5 == 0 {
+                if batch_idx % 2 == 0 {
                     println!("  Batch {}/{}: Loss = {:.4}", batch_idx, num_batches, loss_val);
                 }
             }
@@ -833,7 +833,7 @@ fn main() {
         println!("Epoch {}: Average Loss = {:.4}", epoch + 1, avg_loss);
         
         // Save checkpoint every 5 epochs
-        if (epoch + 1) % 5 == 0 {
+        if (epoch + 1) % 2 == 0 {
             let checkpoint_path = format!("checkpoint_epoch_{}.bin", epoch + 1);
             save_model(&model, &checkpoint_path).unwrap();
         }
