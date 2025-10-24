@@ -464,7 +464,6 @@ impl<B: Backend> DiffusionModel<B> {
 
         Tensor::from_floats(alpha_bars.as_slice(), device)
     }
-
     pub fn add_noise(
         &self,
         x: Tensor<B, 4>,
@@ -479,28 +478,42 @@ impl<B: Backend> DiffusionModel<B> {
         let height = x.dims()[2];
         let width = x.dims()[3];
 
-        let mut noisy_samples = Vec::new();
+        // Gather alpha values for the batch (minimize CPU operations)
+        let time_values: Vec<i32> = time.to_data().to_vec().unwrap();
+        let alpha_values: Vec<f32> = alpha.to_data().to_vec().unwrap();
+        
+        let gathered_alphas: Vec<f32> = time_values
+            .iter()
+            .map(|&t| alpha_values[t as usize])
+            .collect();
+        
+        let alpha_t: Tensor<B, 1> = Tensor::from_floats(gathered_alphas.as_slice(), device);
+        let alpha_t = alpha_t.reshape([batch_size, 1, 1, 1])
+            .repeat_dim(1, channels)
+            .repeat_dim(2, height)
+            .repeat_dim(3, width);
 
-        for i in 0..batch_size {
-            let time_t = time.clone().slice([i..i + 1]).into_scalar().elem::<i32>() as usize;
+        let sqrt_alpha = alpha_t.clone().sqrt();
+        let sqrt_one_minus_alpha = (Tensor::ones_like(&alpha_t) - alpha_t).sqrt();
 
-            let alpha_t = alpha.clone().slice([time_t..time_t + 1]);
-
-            let sqrt_alpha = alpha_t.clone().sqrt();
-            let sqrt_one_minus_alpha = (Tensor::ones_like(&alpha_t) - alpha_t).sqrt();
-
-            let xi = x.clone().slice([i..i + 1, 0..channels, 0..height, 0..width]);
-            let noise_i = noise.clone().slice([i..i + 1, 0..channels, 0..height, 0..width]);
-
-            let sqrt_alpha_exp = sqrt_alpha.clone().expand([1, channels, height, width]);
-            let sqrt_one_minus_alpha_exp = sqrt_one_minus_alpha.clone().expand([1, channels, height, width]);
-            let noisy_i = xi * sqrt_alpha_exp + noise_i * sqrt_one_minus_alpha_exp;
-
-            noisy_samples.push(noisy_i);
-        }
-
-        let noisy = Tensor::cat(noisy_samples, 0);
+        // All operations stay on GPU
+        let noisy = x * sqrt_alpha + noise.clone() * sqrt_one_minus_alpha;
+        
         (noisy, noise)
+}
+// Helper method to gather alpha values efficiently
+    fn gather_alphas(&self, alphas: &Tensor<B, 1>, time: &Tensor<B, 1, Int>, device: &B::Device) -> Tensor<B, 1> {
+        let batch_size = time.dims()[0];
+        let alpha_vals: Vec<f32> = alphas.to_data().to_vec().unwrap();
+        
+        let gathered: Vec<f32> = (0..batch_size)
+            .map(|i| {
+                let t_val = time.clone().slice([i..i+1]).into_scalar().elem::<i32>() as usize;
+                alpha_vals[t_val]
+            })
+            .collect();
+        
+        Tensor::from_floats(gathered.as_slice(), device)
     }
 
     pub fn noise_predict(&self, x_t: Tensor<B, 4>, time_emb: Tensor<B, 2>) -> Tensor<B, 4> {
