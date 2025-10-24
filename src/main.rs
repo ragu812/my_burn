@@ -516,7 +516,7 @@ impl<B: Backend> DiffusionModel<B> {
         Tensor::from_floats(gathered.as_slice(), device)
     }
 
-    pub fn noise_predict(&self, x_t: Tensor<B, 4>, time_emb: Tensor<B, 2>) -> Tensor<B, 4> {
+        pub fn noise_predict(&self, x_t: Tensor<B, 4>, time_emb: Tensor<B, 2>) -> Tensor<B, 4> {
         self.unet.forward(x_t, time_emb)
     }
 
@@ -797,9 +797,9 @@ fn main() {
 
     let in_channels = 3;
     let latent_dim = 256;
-    let num_timesteps = 1000;
+    let num_timesteps = 500;
     let batch_size = 6; // INCREASED batch size for better GPU utilization
-    let num_epochs = 6;
+    let num_epochs = 10;
 
     let mut model = DiffusionModel::<Backend>::new(&device, latent_dim, in_channels, num_timesteps);
     let optimizer_config = AdamConfig::new();
