@@ -785,7 +785,7 @@ fn main() {
     let in_channels = 3;
     let latent_dim = 256;
     let num_timesteps = 2000;
-    let batch_size = 4; // INCREASED batch size for better GPU utilization
+    let batch_size = 6; // INCREASED batch size for better GPU utilization
     let num_epochs = 25;
 
     let mut model = DiffusionModel::<Backend>::new(&device, latent_dim, in_channels, num_timesteps);
@@ -823,7 +823,7 @@ fn main() {
                 let loss_val = loss.into_scalar().elem::<f32>();
                 total_loss += loss_val;
                 
-                if batch_idx % 10 == 0 {
+                if batch_idx % 5 == 0 {
                     println!("  Batch {}/{}: Loss = {:.4}", batch_idx, num_batches, loss_val);
                 }
             }
@@ -843,12 +843,10 @@ fn main() {
 
     println!("\n=== Generating sample image ===");
     // Generate and save an image
-    // IMPORTANT: The sample function expects the latent dimension as channels
-    // Based on your VAE, the latent has shape [batch, latent_dim, 2, 4]
+    
     let generated = model.sample(1, &device);
     let generated_img: Tensor<Backend, 3> = generated.squeeze::<3>(0);
 
-    // Convert from [C, H, W] to pixel data
     let data: Vec<f32> = generated_img.to_data().to_vec().unwrap();
 
     let img = image::RgbImage::from_fn(32, 32, |x, y| {
